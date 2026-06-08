@@ -4,6 +4,8 @@ import pygame as pg
 
 from .. import constants as c
 from .. import tool
+from ..frame_cache import get_cropped_frames, get_rotated_frame
+from ..pool import bullet_pool, fume_pool, sun_pool
 
 
 class Car(pg.sprite.Sprite):
@@ -38,6 +40,29 @@ class Car(pg.sprite.Sprite):
         surface.blit(self.image, self.rect)
 
 
+def create_bullet(
+    x: int,
+    start_y: int,
+    dest_y: int,
+    name: str,
+    damage: int,
+    effect: str = None,
+    passed_torchwood_x: int = None,
+    damage_type: str = c.ZOMBIE_DEAFULT_DAMAGE,
+):
+    return bullet_pool.acquire(
+        Bullet,
+        x,
+        start_y,
+        dest_y,
+        name,
+        damage,
+        effect,
+        passed_torchwood_x,
+        damage_type,
+    )
+
+
 # 豌豆及孢子类普通子弹
 class Bullet(pg.sprite.Sprite):
     def __init__(
@@ -52,14 +77,36 @@ class Bullet(pg.sprite.Sprite):
         damage_type: str = c.ZOMBIE_DEAFULT_DAMAGE,
     ):
         pg.sprite.Sprite.__init__(self)
+        self._init_bullet_data(
+            x,
+            start_y,
+            dest_y,
+            name,
+            damage,
+            effect,
+            passed_torchwood_x,
+            damage_type,
+        )
 
+    def _init_bullet_data(
+        self,
+        x,
+        start_y,
+        dest_y,
+        name,
+        damage,
+        effect,
+        passed_torchwood_x,
+        damage_type,
+    ):
         self.name = name
-        self.frames = []
         self.frame_index = 0
-        self.load_images()
+        self._last_mask_key = None
+        if not hasattr(self, 'fly_frames') or not self.fly_frames:
+            self.load_images()
         self.frame_num = len(self.frames)
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
+        self._update_mask_for_key(('fly', self.frame_index))
         self.rect = self.image.get_rect()
         self.rect.x = x
         self.rect.y = start_y
@@ -73,41 +120,61 @@ class Bullet(pg.sprite.Sprite):
         self.current_time = 0
         self.animate_timer = 0
         self.animate_interval = 70
-        self.passed_torchwood_x = (
-            passed_torchwood_x  # 记录最近通过的火炬树横坐标，如果没有缺省为None
+        self.passed_torchwood_x = passed_torchwood_x
+
+    def reset(
+        self,
+        x,
+        start_y,
+        dest_y,
+        name,
+        damage,
+        effect=None,
+        passed_torchwood_x=None,
+        damage_type=c.ZOMBIE_DEAFULT_DAMAGE,
+    ):
+        if self.name != name:
+            self.name = name
+            self.load_images()
+        self._init_bullet_data(
+            x,
+            start_y,
+            dest_y,
+            name,
+            damage,
+            effect,
+            passed_torchwood_x,
+            damage_type,
         )
 
-    def loadFrames(self, frames, name):
+    def _update_mask_for_key(self, mask_key):
+        if self._last_mask_key != mask_key:
+            self.mask = pg.mask.from_surface(self.image)
+            self._last_mask_key = mask_key
+
+    def _get_crop_rect(self, name):
         frame_list = tool.GFX[name]
         if name in c.PLANT_RECT:
             data = c.PLANT_RECT[name]
-            x, y, width, height = (
-                data['x'],
-                data['y'],
-                data['width'],
-                data['height'],
-            )
-        else:
-            x, y = 0, 0
-            rect = frame_list[0].get_rect()
-            width, height = rect.w, rect.h
+            return data['x'], data['y'], data['width'], data['height']
+        rect = frame_list[0].get_rect()
+        return 0, 0, rect.w, rect.h
 
-        for frame in frame_list:
-            frames.append(tool.get_image(frame, x, y, width, height))
+    def loadFrames(self, frames, name):
+        x, y, width, height = self._get_crop_rect(name)
+        frames.extend(get_cropped_frames(name, x, y, width, height, c.BLACK))
 
     def load_images(self):
-        self.fly_frames = []
-        self.explode_frames = []
-
         fly_name = self.name
         if self.name in c.BULLET_INDEPENDENT_BOOM_IMG:
             explode_name = f'{self.name}Explode'
         else:
             explode_name = 'PeaNormalExplode'
 
+        self.fly_frames = []
+        self.explode_frames = []
         self.loadFrames(self.fly_frames, fly_name)
         self.loadFrames(self.explode_frames, explode_name)
-
         self.frames = self.fly_frames
 
     def update(self, game_info):
@@ -129,23 +196,32 @@ class Bullet(pg.sprite.Sprite):
             if self.frame_index >= self.frame_num:
                 self.frame_index = 0
             self.image = self.frames[self.frame_index]
+            self._update_mask_for_key((self.state, self.frame_index))
 
     def setExplode(self):
         self.state = c.EXPLODE
         self.explode_timer = self.current_time
         self.frames = self.explode_frames
         self.frame_num = len(self.frames)
+        self.frame_index = 0
         self.image = self.frames[0]
-        self.mask = pg.mask.from_surface(self.image)
+        self._update_mask_for_key((c.EXPLODE, 0))
 
-        # 播放子弹爆炸音效
         if self.name == c.BULLET_FIREBALL:
             c.SOUND_FIREPEA_EXPLODE.play()
         else:
             c.SOUND_BULLET_EXPLODE.play()
 
+    def kill(self):
+        super().kill()
+        bullet_pool.release(self)
+
     def draw(self, surface):
         surface.blit(self.image, self.rect)
+
+
+def create_fume(x, y):
+    return fume_pool.acquire(Fume, x, y)
 
 
 # 大喷菇的烟雾
@@ -153,25 +229,29 @@ class Bullet(pg.sprite.Sprite):
 class Fume(pg.sprite.Sprite):
     def __init__(self, x, y):
         pg.sprite.Sprite.__init__(self)
+        self._init_fume_data(x, y)
+
+    def _init_fume_data(self, x, y):
         self.name = c.FUME
         self.timer = 0
         self.frame_index = 0
-        self.load_images()
+        if not hasattr(self, 'frames') or not self.frames:
+            self.load_images()
         self.frame_num = len(self.frames)
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
         self.rect = self.image.get_rect()
         self.rect.x = x
         self.rect.y = y
 
+    def reset(self, x, y):
+        self._init_fume_data(x, y)
+
     def load_images(self):
-        self.fly_frames = []
-
-        fly_name = self.name
-
-        self.loadFrames(self.fly_frames, fly_name)
-
-        self.frames = self.fly_frames
+        frame_list = tool.GFX[self.name]
+        rect = frame_list[0].get_rect()
+        self.frames = get_cropped_frames(
+            self.name, 0, 0, rect.w, rect.h, c.BLACK
+        )
 
     def draw(self, surface):
         surface.blit(self.image, self.rect)
@@ -186,14 +266,9 @@ class Fume(pg.sprite.Sprite):
             self.timer = self.current_time
         self.image = self.frames[self.frame_index]
 
-    def loadFrames(self, frames, name):
-        frame_list = tool.GFX[name]
-        x, y = 0, 0
-        rect = frame_list[0].get_rect()
-        width, height = rect.w, rect.h
-
-        for frame in frame_list:
-            frames.append(tool.get_image(frame, x, y, width, height))
+    def kill(self):
+        super().kill()
+        fume_pool.release(self)
 
 
 # 杨桃的子弹
@@ -207,20 +282,25 @@ class StarBullet(Bullet):
         level,
         damage_type=c.ZOMBIE_DEAFULT_DAMAGE,
     ):    # direction指星星飞行方向
-        Bullet.__init__(
-            self,
+        pg.sprite.Sprite.__init__(self)
+        self._init_bullet_data(
             x,
             start_y,
             start_y,
             c.BULLET_STAR,
             damage,
-            damage_type=damage_type,
+            None,
+            None,
+            damage_type,
         )
         self.level = level
         self.map_y = self.level.map.getMapIndex(
             self.rect.x, self.rect.centery
         )[1]
         self.direction = direction
+
+    def kill(self):
+        pg.sprite.Sprite.kill(self)
 
     def update(self, game_info):
         self.current_time = game_info[c.CURRENT_TIME]
@@ -292,9 +372,9 @@ class Plant(pg.sprite.Sprite):
         self.highlight_time = 0
 
         self.attack_check = c.CHECK_ATTACK_ALWAYS
+        self._last_mask_frame_index = -1
 
     def loadFrames(self, frames, name, scale=1, color=c.BLACK):
-        frame_list = tool.GFX[name]
         if name in c.PLANT_RECT:
             data = c.PLANT_RECT[name]
             x, y, width, height = (
@@ -305,27 +385,40 @@ class Plant(pg.sprite.Sprite):
             )
         else:
             x, y = 0, 0
-            rect = frame_list[0].get_rect()
+            rect = tool.GFX[name][0].get_rect()
             width, height = rect.w, rect.h
 
-        for frame in frame_list:
-            frames.append(
-                tool.get_image(frame, x, y, width, height, color, scale)
-            )
+        frames.extend(
+            get_cropped_frames(name, x, y, width, height, color, scale)
+        )
 
     def loadImages(self, name, scale):
         self.loadFrames(self.frames, name, scale)
 
+    def _update_mask_if_frame_changed(self):
+        if self._last_mask_frame_index != self.frame_index:
+            self.mask = pg.mask.from_surface(self.image)
+            self._last_mask_frame_index = self.frame_index
+
+    def _apply_hit_alpha(self):
+        if self.current_time - self.highlight_time < 100:
+            self.image.set_alpha(150)
+        elif (self.current_time - self.hit_timer) < 200:
+            self.image.set_alpha(192)
+        else:
+            self.image.set_alpha(255)
+
     def changeFrames(self, frames):
-        # change image frames and modify rect position
         self.frames = frames
         self.frame_num = len(self.frames)
         self.frame_index = 0
+        self._last_mask_frame_index = -1
 
         bottom = self.rect.bottom
         x = self.rect.x
         self.image = self.frames[self.frame_index]
         self.mask = pg.mask.from_surface(self.image)
+        self._last_mask_frame_index = self.frame_index
         self.rect = self.image.get_rect()
         self.rect.bottom = bottom
         self.rect.x = x
@@ -360,13 +453,8 @@ class Plant(pg.sprite.Sprite):
             self.animate_timer = self.current_time
 
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
-        if self.current_time - self.highlight_time < 100:
-            self.image.set_alpha(150)
-        elif (self.current_time - self.hit_timer) < 200:
-            self.image.set_alpha(192)
-        else:
-            self.image.set_alpha(255)
+        self._update_mask_if_frame_changed()
+        self._apply_hit_alpha()
 
     def canAttack(self, zombie):
         if (zombie.name == c.SNORKELZOMBIE) and (
@@ -408,19 +496,54 @@ class Plant(pg.sprite.Sprite):
         return self.rect.centerx, self.rect.bottom
 
 
+def create_sun(x, y, dest_x, dest_y, is_big=True):
+    return sun_pool.acquire(Sun, x, y, dest_x, dest_y, is_big)
+
+
 class Sun(Plant):
     def __init__(self, x, y, dest_x, dest_y, is_big=True):
+        pg.sprite.Sprite.__init__(self)
+        self._init_sun_data(x, y, dest_x, dest_y, is_big)
+
+    def _init_sun_data(self, x, y, dest_x, dest_y, is_big=True):
         if is_big:
             scale = 0.9
             self.sun_value = c.SUN_VALUE
         else:
             scale = 0.6
             self.sun_value = 15
-        Plant.__init__(self, x, y, c.SUN, 0, None, scale)
+        self.frame_index = 0
+        self._last_mask_frame_index = -1
+        if not getattr(self, 'frames', None):
+            self.frames = []
+            self.loadImages(c.SUN, scale)
+        self.frame_num = len(self.frames)
+        self.image = self.frames[self.frame_index]
+        self.mask = pg.mask.from_surface(self.image)
+        self._last_mask_frame_index = self.frame_index
+        self.rect = self.image.get_rect()
+        self.rect.centerx = x
+        self.rect.bottom = y
+        self.name = c.SUN
+        self.health = 0
+        self.state = c.IDLE
+        self.bullet_group = None
+        self.animate_timer = 0
+        self.animate_interval = 70
+        self.hit_timer = 0
+        self.highlight_time = 0
+        self.attack_check = c.CHECK_ATTACK_NEVER
         self.move_speed = 1
         self.dest_x = dest_x
         self.dest_y = dest_y
         self.die_timer = 0
+
+    def reset(self, x, y, dest_x, dest_y, is_big=True):
+        self._init_sun_data(x, y, dest_x, dest_y, is_big)
+
+    def kill(self):
+        super().kill()
+        sun_pool.release(self)
 
     def handleState(self):
         if self.rect.centerx != self.dest_x:
@@ -473,7 +596,7 @@ class SunFlower(Plant):
             self.sun_timer = self.current_time - (c.FLOWER_SUN_INTERVAL - 6000)
         elif (self.current_time - self.sun_timer) > c.FLOWER_SUN_INTERVAL:
             self.sun_group.add(
-                Sun(
+                create_sun(
                     self.rect.centerx,
                     self.rect.bottom,
                     self.rect.right,
@@ -493,7 +616,7 @@ class PeaShooter(Plant):
             self.shoot_timer = self.current_time - 700
         elif (self.current_time - self.shoot_timer) >= 1400:
             self.bullet_group.add(
-                Bullet(
+                create_bullet(
                     self.rect.right - 15,
                     self.rect.y,
                     self.rect.y,
@@ -526,7 +649,7 @@ class RepeaterPea(Plant):
         elif self.current_time - self.shoot_timer >= 1400:
             self.first_shot = True
             self.bullet_group.add(
-                Bullet(
+                create_bullet(
                     self.rect.right - 15,
                     self.rect.y,
                     self.rect.y,
@@ -541,7 +664,7 @@ class RepeaterPea(Plant):
         elif self.first_shot and (self.current_time - self.shoot_timer) > 100:
             self.first_shot = False
             self.bullet_group.add(
-                Bullet(
+                create_bullet(
                     self.rect.right - 15,
                     self.rect.y,
                     self.rect.y,
@@ -592,7 +715,7 @@ class ThreePeaShooter(Plant):
                 else:
                     dest_y = self.rect.y + (i - 1) * c.GRID_Y_SIZE + offset_y
                 self.bullet_groups[tmp_y].add(
-                    Bullet(
+                    create_bullet(
                         self.rect.right - 15,
                         self.rect.y,
                         dest_y,
@@ -623,7 +746,7 @@ class SnowPeaShooter(Plant):
             self.shoot_timer = self.current_time - 700
         elif (self.current_time - self.shoot_timer) >= 1400:
             self.bullet_group.add(
-                Bullet(
+                create_bullet(
                     self.rect.right - 15,
                     self.rect.y,
                     self.rect.y,
@@ -712,14 +835,9 @@ class CherryBomb(Plant):
                 self.animate_timer = self.current_time
 
             self.image = self.frames[self.frame_index]
-            self.mask = pg.mask.from_surface(self.image)
+            self._update_mask_if_frame_changed()
 
-        if self.current_time - self.highlight_time < 100:
-            self.image.set_alpha(150)
-        elif (self.current_time - self.hit_timer) < 200:
-            self.image.set_alpha(192)
-        else:
-            self.image.set_alpha(255)
+        self._apply_hit_alpha()
 
 
 class Chomper(Plant):
@@ -833,7 +951,7 @@ class PuffShroom(Plant):
             self.shoot_timer = self.current_time - 700
         elif (self.current_time - self.shoot_timer) >= 1400:
             self.bullet_group.add(
-                Bullet(
+                create_bullet(
                     self.rect.right,
                     self.rect.y + 10,
                     self.rect.y + 10,
@@ -1095,14 +1213,8 @@ class Jalapeno(Plant):
                     return
                 self.animate_timer = self.current_time
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
-
-        if self.current_time - self.highlight_time < 100:
-            self.image.set_alpha(150)
-        elif (self.current_time - self.hit_timer) < 200:
-            self.image.set_alpha(192)
-        else:
-            self.image.set_alpha(255)
+        self._update_mask_if_frame_changed()
+        self._apply_hit_alpha()
 
     def getPosition(self):
         return self.orig_pos
@@ -1160,7 +1272,7 @@ class ScaredyShroom(Plant):
             self.shoot_timer = self.current_time - 700
         elif (self.current_time - self.shoot_timer) >= 1400:
             self.bullet_group.add(
-                Bullet(
+                create_bullet(
                     self.rect.right - 15,
                     self.rect.y + 40,
                     self.rect.y + 40,
@@ -1213,7 +1325,7 @@ class SunShroom(Plant):
             self.sun_timer = self.current_time - (c.FLOWER_SUN_INTERVAL - 6000)
         elif (self.current_time - self.sun_timer) > c.FLOWER_SUN_INTERVAL:
             self.sun_group.add(
-                Sun(
+                create_sun(
                     self.rect.centerx,
                     self.rect.bottom,
                     self.rect.right,
@@ -1284,14 +1396,8 @@ class IceShroom(Plant):
                         return
                 self.animate_timer = self.current_time
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
-
-        if self.current_time - self.highlight_time < 100:
-            self.image.set_alpha(150)
-        elif (self.current_time - self.hit_timer) < 200:
-            self.image.set_alpha(192)
-        else:
-            self.image.set_alpha(255)
+        self._update_mask_if_frame_changed()
+        self._apply_hit_alpha()
 
     def getPosition(self):
         return self.orig_pos
@@ -1399,9 +1505,11 @@ class WallNutBowling(Plant):
 
     def animation(self):
         image = self.frames[self.frame_index]
-        self.image = pg.transform.rotate(image, self.rotate_degree)
-        self.mask = pg.mask.from_surface(self.image)
-        # must keep the center postion of image when rotate
+        self.image = get_rotated_frame(image, self.rotate_degree)
+        mask_key = (self.frame_index, self.rotate_degree)
+        if getattr(self, '_last_mask_key', None) != mask_key:
+            self.mask = pg.mask.from_surface(self.image)
+            self._last_mask_key = mask_key
         self.rect = self.image.get_rect(center=self.init_rect.center)
 
 
@@ -1461,11 +1569,14 @@ class RedWallNutBowling(Plant):
 
         image = self.frames[self.frame_index]
         if self.state == c.IDLE:
-            self.image = pg.transform.rotate(image, self.rotate_degree)
+            self.image = get_rotated_frame(image, self.rotate_degree)
+            mask_key = (self.frame_index, self.rotate_degree, c.IDLE)
         else:
             self.image = image
-        self.mask = pg.mask.from_surface(self.image)
-        # must keep the center postion of image when rotate
+            mask_key = (self.frame_index, c.ATTACK)
+        if getattr(self, '_last_mask_key', None) != mask_key:
+            self.mask = pg.mask.from_surface(self.image)
+            self._last_mask_key = mask_key
         self.rect = self.image.get_rect(center=self.init_rect.center)
 
     def getPosition(self):
@@ -1491,7 +1602,7 @@ class TorchWood(Plant):
                 and abs(i.rect.centerx - self.rect.centerx) <= 20
             ):
                 self.bullet_group.add(
-                    Bullet(
+                    create_bullet(
                         i.rect.x,
                         i.rect.y,
                         i.dest_y,
@@ -1508,7 +1619,7 @@ class TorchWood(Plant):
                 and abs(i.rect.centerx - self.rect.centerx)
             ):
                 self.bullet_group.add(
-                    Bullet(
+                    create_bullet(
                         i.rect.x,
                         i.rect.y,
                         i.dest_y,
@@ -1671,13 +1782,8 @@ class CoffeeBean(Plant):
             self.animate_timer = self.current_time
 
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
-        if self.current_time - self.highlight_time < 100:
-            self.image.set_alpha(150)
-        elif (self.current_time - self.hit_timer) < 200:
-            self.image.set_alpha(192)
-        else:
-            self.image.set_alpha(255)
+        self._update_mask_if_frame_changed()
+        self._apply_hit_alpha()
 
 
 class SeaShroom(Plant):
@@ -1705,7 +1811,7 @@ class SeaShroom(Plant):
             self.shoot_timer = self.current_time - 700
         elif (self.current_time - self.shoot_timer) >= 1400:
             self.bullet_group.add(
-                Bullet(
+                create_bullet(
                     self.rect.right,
                     self.rect.y + 50,
                     self.rect.y + 50,
@@ -1883,14 +1989,8 @@ class DoomShroom(Plant):
                     return
                 self.animate_timer = self.current_time
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
-
-        if self.current_time - self.highlight_time < 100:
-            self.image.set_alpha(150)
-        elif (self.current_time - self.hit_timer) < 200:
-            self.image.set_alpha(192)
-        else:
-            self.image.set_alpha(255)
+        self._update_mask_if_frame_changed()
+        self._apply_hit_alpha()
 
 
 # 用于描述毁灭菇的坑
@@ -1999,14 +2099,8 @@ class GraveBuster(Plant):
             self.animate_timer = self.current_time
 
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
-
-        if self.current_time - self.highlight_time < 100:
-            self.image.set_alpha(150)
-        elif (self.current_time - self.hit_timer) < 200:
-            self.image.set_alpha(192)
-        else:
-            self.image.set_alpha(255)
+        self._update_mask_if_frame_changed()
+        self._apply_hit_alpha()
 
 
 class FumeShroom(Plant):
@@ -2060,7 +2154,7 @@ class FumeShroom(Plant):
                 self.changeFrames(self.attack_frames)
 
         if self.current_time - self.shoot_timer >= 1400:
-            self.bullet_group.add(Fume(self.rect.right - 35, self.rect.y))
+            self.bullet_group.add(create_fume(self.rect.right - 35, self.rect.y))
             # 烟雾只是个动画，实际伤害由本身完成
             for target_zombie in self.zombie_group:
                 if self.canAttack(target_zombie):
@@ -2084,14 +2178,8 @@ class FumeShroom(Plant):
             self.animate_timer = self.current_time
 
         self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
-
-        if self.current_time - self.highlight_time < 100:
-            self.image.set_alpha(150)
-        elif (self.current_time - self.hit_timer) < 200:
-            self.image.set_alpha(192)
-        else:
-            self.image.set_alpha(255)
+        self._update_mask_if_frame_changed()
+        self._apply_hit_alpha()
 
 
 class IceFrozenPlot(Plant):
@@ -2184,7 +2272,9 @@ class GiantWallNut(Plant):
 
     def animation(self):
         image = self.frames[self.frame_index]
-        self.image = pg.transform.rotate(image, self.rotate_degree)
-        self.mask = pg.mask.from_surface(self.image)
-        # must keep the center postion of image when rotate
+        self.image = get_rotated_frame(image, self.rotate_degree)
+        mask_key = (self.frame_index, self.rotate_degree)
+        if getattr(self, '_last_mask_key', None) != mask_key:
+            self.mask = pg.mask.from_surface(self.image)
+            self._last_mask_key = mask_key
         self.rect = self.image.get_rect(center=self.init_rect.center)

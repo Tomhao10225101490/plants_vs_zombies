@@ -162,15 +162,25 @@ class Control:
                     _,
                     self.mouse_click[1],
                 ) = pg.mouse.get_pressed()
-                # self.mouse_click[0]表示左键，self.mouse_click[1]表示右键
-                print(
-                    f'点击位置: ({self.mouse_pos[0]:3}, {self.mouse_pos[1]:3}) 左右键点击情况: {self.mouse_click}'
+                logger.debug(
+                    '点击位置: (%s, %s) 左右键点击情况: %s',
+                    self.mouse_pos[0],
+                    self.mouse_pos[1],
+                    self.mouse_click,
                 )
+
+    def draw_fps(self):
+        fps_text = get_font(14).render(
+            f'FPS: {self.clock.get_fps():.1f}', True, c.WHITE, c.BLACK
+        )
+        self.screen.blit(fps_text, (5, 5))
 
     def run(self):
         while not self.done:
             self.event_loop()
             self.update()
+            if c.SHOW_FPS:
+                self.draw_fps()
             pg.display.update()
             self.clock.tick(self.fps)
 
@@ -191,9 +201,10 @@ def get_image(
     image.blit(sheet, (0, 0), (x, y, width, height))
     if colorkey:
         image.set_colorkey(colorkey)
-    image = pg.transform.scale(
-        image, (int(rect.width * scale), int(rect.height * scale))
-    )
+    if scale != 1:
+        image = pg.transform.scale(
+            image, (int(rect.width * scale), int(rect.height * scale))
+        )
     return image
 
 
@@ -212,10 +223,23 @@ def get_image_alpha(
 
     image.blit(sheet, (0, 0), (x, y, width, height))
     image.set_colorkey(colorkey)
-    image = pg.transform.scale(
-        image, (int(rect.width * scale), int(rect.height * scale))
-    )
+    if scale != 1:
+        image = pg.transform.scale(
+            image, (int(rect.width * scale), int(rect.height * scale))
+        )
     return image
+
+
+_FONTS: dict[tuple[int, bool], pg.font.Font] = {}
+
+
+def get_font(size: int, bold: bool = False) -> pg.font.Font:
+    key = (size, bold)
+    if key not in _FONTS:
+        font = pg.font.Font(c.FONT_PATH, size)
+        font.bold = bold
+        _FONTS[key] = font
+    return _FONTS[key]
 
 
 def load_image_frames(
@@ -289,12 +313,149 @@ def load_all_gfx(
     return graphics
 
 
+def _scan_gfx_index(
+    directory: str,
+    accept: tuple[str] = ('.png', '.jpg', '.bmp', '.gif', '.webp'),
+) -> dict[str, tuple]:
+    index = {}
+    if not os.path.isdir(directory):
+        return index
+    for name1 in os.listdir(directory):
+        dir1 = os.path.join(directory, name1)
+        if os.path.isdir(dir1):
+            for name2 in os.listdir(dir1):
+                dir2 = os.path.join(dir1, name2)
+                if os.path.isdir(dir2):
+                    for name3 in os.listdir(dir2):
+                        dir3 = os.path.join(dir2, name3)
+                        if os.path.isdir(dir3):
+                            image_name, _ = os.path.splitext(name3)
+                            index[image_name] = ('frames', dir3, image_name)
+                        else:
+                            image_name, _ = os.path.splitext(name2)
+                            index[image_name] = ('frames', dir2, image_name)
+                            break
+                else:
+                    name, ext = os.path.splitext(name2)
+                    if ext.lower() in accept:
+                        index[name] = ('image', dir2)
+    return index
+
+
+class GfxDict:
+    def __init__(self, directory: str):
+        self._directory = directory
+        self._cache: dict[str, object] = {}
+        self._index: dict[str, tuple] | None = None
+
+    def _ensure_index(self):
+        if self._index is None:
+            self._index = _scan_gfx_index(self._directory)
+
+    def _load(self, name: str):
+        self._ensure_index()
+        if name not in self._index:
+            raise KeyError(name)
+        entry = self._index[name]
+        if entry[0] == 'frames':
+            _, directory, image_name = entry
+            self._cache[name] = load_image_frames(
+                directory, image_name, c.WHITE, ('.png', '.jpg', '.bmp', '.gif', '.webp')
+            )
+        else:
+            _, path = entry
+            img = pg.image.load(path)
+            if img.get_alpha():
+                img = img.convert_alpha()
+            else:
+                img = img.convert()
+                img.set_colorkey(c.WHITE)
+            self._cache[name] = img
+
+    def __getitem__(self, name: str):
+        if name not in self._cache:
+            self._load(name)
+        return self._cache[name]
+
+    def get(self, name: str, default=None):
+        try:
+            return self[name]
+        except KeyError:
+            return default
+
+    def preload_names(self, names):
+        for name in names:
+            if name not in self._cache:
+                try:
+                    self._load(name)
+                except KeyError:
+                    pass
+
+    def preload_category(self, category: str):
+        self._ensure_index()
+        category_path = os.path.join(self._directory, category)
+        for name, entry in self._index.items():
+            path = entry[1]
+            if path.startswith(category_path):
+                self.preload_names([name])
+
+
+def preload_menu_gfx():
+    for category in ('Screen',):
+        GFX.preload_category(category)
+    GFX.preload_names(
+        [
+            c.MAIN_MENU_IMAGE,
+            c.OPTION_ADVENTURE,
+            c.LITTLEGAME_BUTTON,
+            c.EXIT,
+            c.OPTION_BUTTON,
+            c.HELP,
+            c.TROPHY_SUNFLOWER,
+            c.BIG_MENU,
+            c.UNIVERSAL_BUTTON,
+            c.SOUND_VOLUME_BUTTON,
+        ]
+    )
+    for i in range(2):
+        GFX.preload_names(
+            [
+                f'{c.OPTION_ADVENTURE}_{i}',
+                f'{c.LITTLEGAME_BUTTON}_{i}',
+                f'{c.EXIT}_{i}',
+                f'{c.OPTION_BUTTON}_{i}',
+                f'{c.HELP}_{i}',
+            ]
+        )
+
+
+def preload_level_gfx(map_data: dict | None = None):
+    GFX.preload_names(
+        [
+            c.BACKGROUND_NAME,
+            c.LITTLE_MENU,
+            c.SHOVEL,
+            c.SHOVEL_BOX,
+            c.CAR,
+            c.BOOM_IMAGE,
+            c.HUGE_WAVE_APPROCHING,
+            c.LEVEL_PROGRESS_BAR,
+            c.LEVEL_PROGRESS_ZOMBIE_HEAD,
+            c.LEVEL_PROGRESS_FLAG,
+            c.SUN,
+        ]
+    )
+    if map_data is not None:
+        GFX.preload_names([c.BACKGROUND_NAME])
+
+
 pg.display.set_caption(c.ORIGINAL_CAPTION)  # 设置标题
 SCREEN = pg.display.set_mode(c.SCREEN_SIZE, pg.SCALED)   # 设置初始屏幕
-pg.mixer.set_num_channels(255)  # 设置可以同时播放的音频数量，默认为8，经常不够用
+pg.mixer.set_num_channels(64)
 if os.path.exists(
     c.ORIGINAL_LOGO
 ):    # 设置窗口图标，仅对非Nuitka时生效，Nuitka不需要包括额外的图标文件，自动跳过这一过程即可
     pg.display.set_icon(pg.image.load(c.ORIGINAL_LOGO))
 
-GFX = load_all_gfx(c.PATH_IMG_DIR)
+GFX = GfxDict(c.PATH_IMG_DIR)
+preload_menu_gfx()

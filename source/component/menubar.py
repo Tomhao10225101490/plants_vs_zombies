@@ -8,8 +8,7 @@ from .. import tool
 
 def getSunValueImage(sun_value):
     # for pack, must include ttf
-    font = pg.font.Font(c.FONT_PATH, 14)
-    font.bold = True
+    font = tool.get_font(14, bold=True)
     width = 35
     msg_image = font.render(str(sun_value), True, c.NAVYBLUE, c.LIGHTYELLOW)
     msg_rect = msg_image.get_rect()
@@ -42,7 +41,7 @@ class Card:
         self.rect.x = x
         self.rect.y = y
         # 绘制植物阳光消耗大小
-        font = pg.font.Font(c.FONT_PATH, 12)
+        font = tool.get_font(12)
         self.sun_cost_img = font.render(
             str(self.info[c.SUN_INDEX]), True, c.BLACK
         )
@@ -183,6 +182,8 @@ class MenuBar:
         self.rect.y = 0
 
         self.sun_value = sun_value
+        self._cached_sun_value = None
+        self._sun_value_image = None
         self.card_offset_x = 26
         self.setupCards(card_list)
 
@@ -248,11 +249,13 @@ class MenuBar:
 
     def decreaseSunValue(self, value):
         self.sun_value -= value
+        self._cached_sun_value = None
 
     def increaseSunValue(self, value):
         self.sun_value += value
         if self.sun_value > 9990:
             self.sun_value = 9990
+        self._cached_sun_value = None
 
     def setCardFrozenTime(self, plant_name):
         for card in self.card_list:
@@ -261,12 +264,16 @@ class MenuBar:
                 break
 
     def drawSunValue(self):
-        self.value_image = getSunValueImage(self.sun_value)
-        self.value_rect = self.value_image.get_rect()
-        self.value_rect.x = 21
-        self.value_rect.y = self.rect.bottom - 24
-
-        self.image.blit(self.value_image, self.value_rect)
+        if (
+            self._cached_sun_value != self.sun_value
+            or self._sun_value_image is None
+        ):
+            self._cached_sun_value = self.sun_value
+            self._sun_value_image = getSunValueImage(self.sun_value)
+            self.value_rect = self._sun_value_image.get_rect()
+            self.value_rect.x = 21
+            self.value_rect.y = self.rect.bottom - 24
+        self.image.blit(self._sun_value_image, self.value_rect)
 
     def draw(self, surface):
         self.drawSunValue()

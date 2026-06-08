@@ -697,16 +697,43 @@ for _part1 in (
         ZOMBIE_RECT[f'{_part1}{_part2}'] = {'x': 55, 'width': 105}
 
 
+# 性能调试开关
+SHOW_FPS = False
+
 # 音效
+_SOUND_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    'resources',
+    'sound',
+)
+
+
+class LazySound:
+    def __init__(self, filename: str):
+        self._filename = filename
+        self._sound = None
+
+    def _ensure_loaded(self):
+        if self._sound is None:
+            self._sound = pg.mixer.Sound(
+                os.path.join(_SOUND_DIR, self._filename)
+            )
+
+    def play(self, *args, **kwargs):
+        self._ensure_loaded()
+        return self._sound.play(*args, **kwargs)
+
+    def set_volume(self, volume):
+        self._ensure_loaded()
+        return self._sound.set_volume(volume)
+
+    def stop(self):
+        if self._sound is not None:
+            return self._sound.stop()
+
+
 def _getSound(filename):
-    return pg.mixer.Sound(
-        os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            'resources',
-            'sound',
-            filename,
-        )
-    )
+    return LazySound(filename)
 
 
 # 所有音效的元组，用一波海象算子表达，免得要维护两个

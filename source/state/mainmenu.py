@@ -289,17 +289,18 @@ class Menu(tool.State):
         c.SOUND_BUTTON_CLICK.play()
 
     def showCurrentVolumeImage(self, surface: pg.Surface):
-        # 由于音量可变，因此这一内容不能在一开始就结束加载，而应当不断刷新不断显示
-        font = pg.font.Font(c.FONT_PATH, 30)
-        volume_tips = font.render(
-            f'音量：{round(self.game_info[c.SOUND_VOLUME]*100):3}%',
-            True,
-            c.LIGHTGRAY,
-        )
-        volume_tips_rect = volume_tips.get_rect()
+        volume = self.game_info[c.SOUND_VOLUME]
+        if getattr(self, '_cached_volume', None) != volume:
+            self._cached_volume = volume
+            self._volume_tips_image = tool.get_font(30).render(
+                f'音量：{round(volume * 100):3}%',
+                True,
+                c.LIGHTGRAY,
+            )
+        volume_tips_rect = self._volume_tips_image.get_rect()
         volume_tips_rect.x = 275
         volume_tips_rect.y = 247
-        surface.blit(volume_tips, volume_tips_rect)
+        surface.blit(self._volume_tips_image, volume_tips_rect)
 
     def update(
         self,
