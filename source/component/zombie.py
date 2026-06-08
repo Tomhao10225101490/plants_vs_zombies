@@ -4,6 +4,7 @@ import pygame as pg
 
 from .. import constants as c
 from .. import tool
+from ..frame_cache import get_cropped_frames, get_hypno_flipped_frame
 
 
 class Zombie(pg.sprite.Sprite):
@@ -68,18 +69,33 @@ class Zombie(pg.sprite.Sprite):
         self.freeze_timer = 0
         self.losthead_timer = 0
         self.is_hypno = False  # the zombie is hypo and attack other zombies when it ate a HypnoShroom
+        self._last_mask_key = None
 
     def loadFrames(self, frames, name, colorkey=c.BLACK):
-        frame_list = tool.GFX[name]
-        rect = frame_list[0].get_rect()
-        width, height = rect.w, rect.h
         if name in c.ZOMBIE_RECT:
             data = c.ZOMBIE_RECT[name]
             x, width = data['x'], data['width']
         else:
             x = 0
-        for frame in frame_list:
-            frames.append(tool.get_image(frame, x, 0, width, height, colorkey))
+            rect = tool.GFX[name][0].get_rect()
+            width = rect.w
+        height = tool.GFX[name][0].get_rect().h
+        frames.extend(get_cropped_frames(name, x, 0, width, height, colorkey))
+
+    def _get_display_image(self):
+        frame = self.frames[self.frame_index]
+        if self.is_hypno:
+            image = get_hypno_flipped_frame(frame)
+            mask_key = (id(self.frames), self.frame_index, True)
+        else:
+            image = frame
+            mask_key = (id(self.frames), self.frame_index, False)
+        return image, mask_key
+
+    def _update_mask_for_key(self, mask_key):
+        if self._last_mask_key != mask_key:
+            self.mask = pg.mask.from_surface(self.image)
+            self._last_mask_key = mask_key
 
     def update(self, game_info):
         self.current_time = game_info[c.CURRENT_TIME]
@@ -325,11 +341,12 @@ class Zombie(pg.sprite.Sprite):
         self.frames = frames
         self.frame_num = len(self.frames)
         self.frame_index = 0
+        self._last_mask_key = None
 
         bottom = self.rect.bottom
         centerx = self.rect.centerx
-        self.image = self.frames[self.frame_index]
-        self.mask = pg.mask.from_surface(self.image)
+        self.image, mask_key = self._get_display_image()
+        self._update_mask_for_key(mask_key)
         self.rect = self.image.get_rect()
         self.rect.bottom = bottom
         self.rect.centerx = centerx
@@ -350,10 +367,8 @@ class Zombie(pg.sprite.Sprite):
                 self.frame_index = 0
             self.animate_timer = self.current_time
 
-        self.image = self.frames[self.frame_index]
-        if self.is_hypno:
-            self.image = pg.transform.flip(self.image, True, False)
-        self.mask = pg.mask.from_surface(self.image)
+        self.image, mask_key = self._get_display_image()
+        self._update_mask_for_key(mask_key)
         if (self.current_time - self.hit_timer) >= 200:
             self.image.set_alpha(255)
         else:
@@ -884,10 +899,8 @@ class NewspaperZombie(Zombie):
                 self.frame_index = 0
             self.animate_timer = self.current_time
 
-        self.image = self.frames[self.frame_index]
-        if self.is_hypno:
-            self.image = pg.transform.flip(self.image, True, False)
-        self.mask = pg.mask.from_surface(self.image)
+        self.image, mask_key = self._get_display_image()
+        self._update_mask_for_key(mask_key)
         if (self.current_time - self.hit_timer) >= 200:
             self.image.set_alpha(255)
         else:
@@ -1291,10 +1304,8 @@ class PoleVaultingZombie(Zombie):
                     self.speed = 1.04
             self.animate_timer = self.current_time
 
-        self.image = self.frames[self.frame_index]
-        if self.is_hypno:
-            self.image = pg.transform.flip(self.image, True, False)
-        self.mask = pg.mask.from_surface(self.image)
+        self.image, mask_key = self._get_display_image()
+        self._update_mask_for_key(mask_key)
         if (self.current_time - self.hit_timer) >= 200:
             self.image.set_alpha(255)
         else:
@@ -1557,10 +1568,8 @@ class SnorkelZombie(Zombie):
                 self.frame_index = 0
             self.animate_timer = self.current_time
 
-        self.image = self.frames[self.frame_index]
-        if self.is_hypno:
-            self.image = pg.transform.flip(self.image, True, False)
-        self.mask = pg.mask.from_surface(self.image)
+        self.image, mask_key = self._get_display_image()
+        self._update_mask_for_key(mask_key)
 
         if (self.current_time - self.hit_timer) >= 200:
             self.image.set_alpha(255)

@@ -33,6 +33,7 @@ class Level(tool.State):
         self.map_x_len = self.map.width
         self.map_y_len = self.map.height
         self.setupBackground()
+        tool.preload_level_gfx(self.map_data)
         self.initState()
 
     def loadMap(self):
@@ -109,6 +110,9 @@ class Level(tool.State):
         self.level = pg.Surface((self.bg_rect.w, self.bg_rect.h)).convert()
         self.viewport = tool.SCREEN.get_rect(bottom=self.bg_rect.bottom)
         self.viewport.x += c.BACKGROUND_OFFSET_X
+        self.level.blit(self.background, self.viewport, self.viewport)
+        self._cached_volume = None
+        self._volume_tips_image = None
 
     def setupGroups(self):
         self.sun_group = pg.sprite.Group()
@@ -121,6 +125,24 @@ class Level(tool.State):
             pg.sprite.Group() for i in range(self.map_y_len)
         ]   # 被魅惑的僵尸
         self.bullet_groups = [pg.sprite.Group() for i in range(self.map_y_len)]
+        self._initZombieRowStats()
+
+    def _initZombieRowStats(self):
+        self.has_zombies_on_row = [False] * self.map_y_len
+        self.leftmost_zombie_x = [c.SCREEN_WIDTH + 1] * self.map_y_len
+        self.any_zombie_alive = False
+
+    def _updateZombieRowStats(self):
+        self.any_zombie_alive = False
+        for i in range(self.map_y_len):
+            zombies = self.zombie_groups[i]
+            if zombies:
+                self.has_zombies_on_row[i] = True
+                self.any_zombie_alive = True
+                self.leftmost_zombie_x[i] = min(z.rect.left for z in zombies)
+            else:
+                self.has_zombies_on_row[i] = False
+                self.leftmost_zombie_x[i] = c.SCREEN_WIDTH + 1
 
     # 按照规则生成每一波僵尸
     # 将波刷新和一波中的僵尸生成分开
@@ -889,7 +911,7 @@ class Level(tool.State):
                 self.sun_timer = self.current_time
                 map_x, map_y = self.map.getRandomMapIndex()
                 x, y = self.map.getMapGridPos(map_x, map_y)
-                self.sun_group.add(plant.Sun(x, 0, x, y))
+                self.sun_group.add(plant.create_sun(x, 0, x, y))
                 self.fallen_sun += 1
 
         # 检查有没有捡到阳光
@@ -964,6 +986,7 @@ class Level(tool.State):
                 car.update(self.game_info)
 
         self.menubar.update(self.current_time)
+        self._updateZombieRowStats()
 
         # 检查碰撞
         self.checkBulletCollisions()
@@ -1350,18 +1373,20 @@ class Level(tool.State):
 
     def checkBulletCollisions(self):
         for i in range(self.map_y_len):
+            if not self.has_zombies_on_row[i]:
+                continue
             for bullet in self.bullet_groups[i]:
                 if bullet.name == c.FUME:
                     continue
-                collided_func = pg.sprite.collide_mask
                 if bullet.state == c.FLY:
-                    # 利用循环而非内建精灵组碰撞判断函数，处理更加灵活，可排除已死亡僵尸
                     for zombie in self.zombie_groups[i]:
                         if (zombie.name == c.SNORKELZOMBIE) and (
                             zombie.frames == zombie.swim_frames
                         ):
                             continue
-                        if collided_func(zombie, bullet):
+                        if not bullet.rect.colliderect(zombie.rect):
+                            continue
+                        if pg.sprite.collide_mask(zombie, bullet):
                             if zombie.state != c.DIE:
                                 zombie.setDamage(
                                     bullet.damage,
@@ -1369,12 +1394,13 @@ class Level(tool.State):
                                     damage_type=bullet.damage_type,
                                 )
                                 bullet.setExplode()
-                                # 火球有溅射伤害
                                 if bullet.name == c.BULLET_FIREBALL:
+                                    splash_x = bullet.rect.x
+                                    splash_range = c.GRID_X_SIZE // 2
                                     for rangeZombie in self.zombie_groups[i]:
                                         if abs(
-                                            rangeZombie.rect.x - bullet.rect.x
-                                        ) <= (c.GRID_X_SIZE // 2):
+                                            rangeZombie.rect.x - splash_x
+                                        ) <= splash_range:
                                             rangeZombie.setDamage(
                                                 c.BULLET_DAMAGE_FIREBALL_RANGE,
                                                 effect=None,
@@ -1384,6 +1410,8 @@ class Level(tool.State):
 
     def checkZombieCollisions(self):
         for i in range(self.map_y_len):
+            if not self.has_zombies_on_row[i]:
+                continue
             for zombie in self.zombie_groups[i]:
                 if zombie.name == c.ZOMBONI:
                     continue
@@ -1427,6 +1455,8 @@ class Level(tool.State):
                 attackable_backup_plants = []
                 # 利用更加精细的循环判断啃咬优先顺序
                 for plant in self.plant_groups[i]:
+                    if not plant.rect.colliderect(zombie.rect):
+                        continue
                     if collided_func(plant, zombie):
                         # 优先攻击南瓜头
                         if plant.name == c.PUMPKINHEAD:
@@ -1630,15 +1660,18 @@ class Level(tool.State):
         for i in range(len(self.cars)):
             if self.cars[i]:
                 for zombie in self.zombie_groups[i]:
+                    if not zombie.rect.colliderect(self.cars[i].rect):
+                        continue
+                    car_hit = pg.sprite.collide_mask(zombie, self.cars[i])
                     if (
                         zombie
                         and zombie.state != c.DIE
                         and (not zombie.losthead)
-                        and (pg.sprite.collide_mask(zombie, self.cars[i]))
+                        and car_hit
                     ):
                         self.cars[i].setWalk()
                     if (
-                        pg.sprite.collide_mask(zombie, self.cars[i])
+                        car_hit
                         or self.cars[i].rect.x
                         <= zombie.rect.right
                         <= self.cars[i].rect.right
@@ -1814,10 +1847,13 @@ class Level(tool.State):
                 target_plant.setIdle()
         elif target_plant.name == c.STARFRUIT:
             can_attack = False
-            for zombie_group in self.zombie_groups:   # 遍历循环所有僵尸
-                for zombie in zombie_group:
-                    if target_plant.canAttack(zombie):
-                        can_attack = True
+            if self.any_zombie_alive:
+                for zombie_group in self.zombie_groups:
+                    for zombie in zombie_group:
+                        if target_plant.canAttack(zombie):
+                            can_attack = True
+                            break
+                    if can_attack:
                         break
             if target_plant.state == c.IDLE and can_attack:
                 target_plant.setAttack()
@@ -1873,17 +1909,24 @@ class Level(tool.State):
                 target_plant.boomed = True
         else:
             can_attack = False
-            if zombie_len > 0:
-                for zombie in self.zombie_groups[i]:
-                    if target_plant.canAttack(zombie):
-                        can_attack = True
-                        break
+            if self.has_zombies_on_row[i]:
+                if self.leftmost_zombie_x[i] <= target_plant.rect.right:
+                    for zombie in self.zombie_groups[i]:
+                        if target_plant.canAttack(zombie):
+                            can_attack = True
+                            break
             if target_plant.state == c.IDLE and can_attack:
                 target_plant.setAttack()
             elif target_plant.state == c.ATTACK and (not can_attack):
                 target_plant.setIdle()
 
     def checkPlants(self):
+        if not self.any_zombie_alive:
+            for i in range(self.map_y_len):
+                for plant in self.plant_groups[i]:
+                    if plant.health <= 0:
+                        self.killPlant(plant)
+            return
         for i in range(self.map_y_len):
             for plant in self.plant_groups[i]:
                 if plant.state != c.SLEEP:
@@ -2065,21 +2108,20 @@ class Level(tool.State):
             self.sound_volume_plus_button, self.sound_volume_plus_button_rect
         )
 
-        # 显示当前音量
-        # 由于音量可变，因此这一内容不能在一开始就结束加载，而应当不断刷新不断显示
-        font = pg.font.Font(c.FONT_PATH, 30)
-        volume_tips = font.render(
-            f'音量：{round(self.game_info[c.SOUND_VOLUME]*100):3}%',
-            True,
-            c.LIGHTGRAY,
-        )
-        volume_tips_rect = volume_tips.get_rect()
+        volume = self.game_info[c.SOUND_VOLUME]
+        if self._cached_volume != volume:
+            self._cached_volume = volume
+            self._volume_tips_image = tool.get_font(30).render(
+                f'音量：{round(volume * 100):3}%',
+                True,
+                c.LIGHTGRAY,
+            )
+        volume_tips_rect = self._volume_tips_image.get_rect()
         volume_tips_rect.x = 275
         volume_tips_rect.y = 247
-        surface.blit(volume_tips, volume_tips_rect)
+        surface.blit(self._volume_tips_image, volume_tips_rect)
 
     def draw(self, surface):
-        self.level.blit(self.background, self.viewport, self.viewport)
         surface.blit(self.level, (0, 0), self.viewport)
         if self.state == c.CHOOSE:
             self.panel.draw(surface)
